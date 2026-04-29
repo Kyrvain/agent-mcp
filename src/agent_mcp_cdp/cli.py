@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from .agent import ProductFeatureAgent
+from .cdp_browser import CDPCrawler
+from .config import DEFAULT_PRODUCT_NAME, DEFAULT_TARGET_URL, Settings
+from .mcp_server import run_mcp
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command == "crawl":
+        asyncio.run(run_crawl(args))
+    elif args.command == "mcp":
+        run_mcp()
+    else:
+        parser.print_help()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="agent-mcp-cdp",
+        description="Use CDP + MCP + an LLM agent to extract product features.",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    crawl = subparsers.add_parser("crawl", help="crawl a page and extract product features")
+    crawl.add_argument("--url", default=DEFAULT_TARGET_URL)
+    crawl.add_argument("--product-name", default=DEFAULT_PRODUCT_NAME)
+    crawl.add_argument("--output-dir", type=Path)
+    crawl.add_argument("--cdp-url")
+    crawl.add_argument("--browser-executable")
+    crawl.add_argument("--headed", action="store_true", help="show the browser window")
+    crawl.add_argument("--wait-ms", type=int)
+    crawl.add_argument("--no-llm", action="store_true", help="force rule-based extraction")
+
+    subparsers.add_parser("mcp", help="start the MCP stdio server")
+    return parser
+
+
+async def run_crawl(args: argparse.Namespace) -> None:
+    output_dir = args.output_dir or default_run_dir()
+    settings = Settings.from_env(
+        target_url=args.url,
+        product_name=args.product_name,
+        cdp_url=args.cdp_url,
+        browser_executable=args.browser_executable,
+        browser_headless=False if args.headed else None,
+        wait_after_load_ms=args.wait_ms,
+        output_dir=output_dir,
+    )
+
+    crawler = CDPCrawler(settings)
+    crawl = await crawler.crawl(settings.target_url, output_dir)
+
+    agent = ProductFeatureAgent(settings, use_llm=not args.no_llm)
+    features = await agent.extract(crawl, settings.product_name)
+
+    payload: dict[str, Any] = {
+        "crawl": crawl.to_dict(),
+        "product_features": features.to_dict(),
+    }
+    write_json(output_dir / "result.json", payload)
+    write_markdown(output_dir / "features.md", payload)
+
+    print(f"Output: {output_dir}")
+    print(f"Browser: {crawl.browser_mode}")
+    print(f"Title: {crawl.title}")
+    print(f"Product: {features.product_name}")
+    print(f"LLM used: {features.llm_used}")
+    if features.features:
+        print("Features:")
+        for item in features.features:
+            print(f"- {item}")
+    if features.warnings:
+        print("Warnings:")
+        for item in features.warnings:
+            print(f"- {item}")
+
+
+def default_run_dir() -> Path:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return Path("data/runs") / stamp
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def write_markdown(path: Path, payload: dict[str, Any]) -> None:
+    features = payload["product_features"]
+    crawl = payload["crawl"]
+    lines = [
+        f"# {features['product_name']} 产品功能提取",
+        "",
+        f"- URL: {crawl['final_url']}",
+        f"- 标题: {crawl['title']}",
+        f"- 浏览器模式: {crawl['browser_mode']}",
+        f"- LLM used: {features['llm_used']}",
+        "",
+        "## 摘要",
+        "",
+        features["summary"] or "无",
+        "",
+        "## 产品功能",
+        "",
+    ]
+    if features["features"]:
+        lines.extend(f"- {item}" for item in features["features"])
+    else:
+        lines.append("- 未提取到明确功能")
+    lines.extend(["", "## 证据", ""])
+    if features["evidence"]:
+        lines.extend(f"- {item}" for item in features["evidence"])
+    else:
+        lines.append("- 无")
+    if features["warnings"]:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- {item}" for item in features["warnings"])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
