@@ -13,11 +13,19 @@ from playwright.async_api import async_playwright
 
 from .config import Settings
 from .models import CrawlResult, NetworkSnippet
+from .product_search import (
+    ProductSearchResult,
+    build_detail_url,
+    match_product,
+    parse_product_list,
+)
 
 
 class CDPCrawler:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._max_response_chars_override: int | None = None
+        self._max_responses_override: int | None = None
 
     async def crawl(self, url: str, output_dir: Path | None = None) -> CrawlResult:
         output_dir = output_dir or self.settings.output_dir
@@ -79,6 +87,129 @@ class CDPCrawler:
                     except subprocess.TimeoutExpired:
                         process.kill()
 
+    async def _crawl_catalog_source(self, output_dir: Path | None = None) -> CrawlResult:
+        """Get product catalog from the listing page's 智链货架 via 2-step SPA navigation.
+
+        Navigates to a detail page first to establish an anti-bot session, then uses
+        SPA hash routing to reach the listing page and triggers lazy-load pagination.
+        """
+        output_dir = output_dir or self.settings.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        self._max_response_chars_override = self.settings.listing_max_response_chars
+        self._max_responses_override = 128  # enough for all paginated pages
+
+        async with async_playwright() as playwright:
+            browser, process, browser_mode = await self._connect_or_launch(playwright)
+            page = None
+            try:
+                if browser.contexts:
+                    context = browser.contexts[0]
+                else:
+                    context = await browser.new_context(
+                        viewport={"width": 1440, "height": 1200},
+                        ignore_https_errors=True,
+                    )
+                page = await context.new_page()
+                await page.set_viewport_size({"width": 1440, "height": 1200})
+
+                responses: list[NetworkSnippet] = []
+                page.on("response", lambda response: asyncio.create_task(
+                    self._capture_response(response, responses)
+                ))
+
+                # Step 1: warm up session via detail page
+                await page.goto(
+                    self.settings.target_url,
+                    wait_until="domcontentloaded",
+                    timeout=self.settings.navigation_timeout_ms,
+                )
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                except PlaywrightTimeoutError:
+                    pass
+                await page.wait_for_timeout(3000)
+                responses.clear()
+
+                # Step 2: navigate to listing page via SPA router (hash change)
+                await page.evaluate("window.location.hash = '#/ai/mark/index'")
+                await page.wait_for_timeout(3000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                except PlaywrightTimeoutError:
+                    pass
+                await page.wait_for_timeout(self.settings.listing_wait_after_load_ms)
+
+                # Step 3: paginate through all pages of each shelf
+                await self._paginate_all_shelves(page)
+
+                title = await page.title()
+                text = await self._body_text(page)
+                links = await self._links(page)
+                screenshot_path = output_dir / "page.png"
+                await page.screenshot(path=str(screenshot_path), full_page=True)
+
+                return CrawlResult(
+                    requested_url=self.settings.listing_url,
+                    final_url=page.url,
+                    title=title,
+                    text=clean_text(text),
+                    links=links,
+                    responses=responses[: self.settings.max_responses],
+                    screenshot_path=screenshot_path,
+                    browser_mode=browser_mode,
+                )
+            finally:
+                self._max_response_chars_override = None
+                self._max_responses_override = None
+                if page is not None:
+                    await page.close()
+                if browser is not None:
+                    await browser.close()
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=8)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+
+    async def search_product(
+        self, product_name: str, output_dir: Path | None = None
+    ) -> tuple[CrawlResult | None, ProductSearchResult]:
+        result = ProductSearchResult(query=product_name)
+
+        catalog_crawl = await self._crawl_catalog_source(output_dir=output_dir)
+        entries = parse_product_list(catalog_crawl)
+
+        if not entries:
+            result.warnings.append("未能从页面提取到任何产品。请确认网站可访问。")
+            return None, result
+
+        matched, confidence, warnings = await match_product(
+            product_name, entries, self.settings
+        )
+        result.candidates = entries
+        result.warnings.extend(warnings)
+
+        if matched is None or confidence < self.settings.search_confidence_threshold:
+            if matched is None:
+                result.warnings.append(
+                    f"未找到匹配产品「{product_name}」，可用产品："
+                    + "、".join(e.name for e in entries[:10])
+                )
+            else:
+                result.warnings.append(
+                    f"匹配度({confidence:.2f})低于阈值({self.settings.search_confidence_threshold})"
+                )
+            return None, result
+
+        result.matched_entry = matched
+        result.confidence = confidence
+        result.detail_url = build_detail_url(matched)
+
+        detail_crawl = await self.crawl(result.detail_url, output_dir)
+        return detail_crawl, result
+
     async def _connect_or_launch(self, playwright: Any) -> tuple[Browser, subprocess.Popen[Any] | None, str]:
         if self.settings.cdp_url:
             browser = await playwright.chromium.connect_over_cdp(self.settings.cdp_url)
@@ -118,6 +249,59 @@ class CDPCrawler:
             stderr=subprocess.DEVNULL,
         )
 
+    async def _paginate_all_shelves(self, page: Page) -> None:
+        """Click through all pagination pages on the listing page to capture all products."""
+        # First scroll to trigger lazy content
+        await page.evaluate(
+            """
+            async () => {
+              const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+              for (let i = 0; i < 8; i += 1) {
+                window.scrollTo(0, document.body.scrollHeight);
+                await delay(400);
+              }
+              window.scrollTo(0, 0);
+            }
+            """
+        )
+        await page.wait_for_timeout(3000)
+
+        # Find all pagination component groups (each shelf has its own)
+        # Element UI pagination: .el-pagination within each shelf
+        for _round in range(10):  # safety limit
+            # Find all "next page" buttons that are not disabled
+            btn_infos = await page.eval_on_selector_all(
+                "button.btn-next",
+                """els => els.map(el => ({
+                    disabled: el.disabled || el.classList.contains('disabled'),
+                    parentClass: el.parentElement?.className || ''
+                }))"""
+            )
+            if not btn_infos:
+                break
+
+            clicked = False
+            for _i, info in enumerate(btn_infos):
+                if info["disabled"]:
+                    continue
+                # Click this next button
+                buttons = await page.query_selector_all("button.btn-next")
+                if _i < len(buttons):
+                    try:
+                        await buttons[_i].click()
+                        clicked = True
+                        await page.wait_for_timeout(4000)
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=8000)
+                        except PlaywrightTimeoutError:
+                            pass
+                        break  # process one page at a time
+                    except Exception:
+                        continue
+
+            if not clicked:
+                break
+
     async def _settle_page(self, page: Page) -> None:
         try:
             await page.wait_for_load_state("networkidle", timeout=15000)
@@ -125,18 +309,17 @@ class CDPCrawler:
             pass
         await page.wait_for_timeout(self.settings.wait_after_load_ms)
 
-    async def _auto_scroll(self, page: Page) -> None:
+    async def _auto_scroll(self, page: Page, max_scrolls: int = 12, delay_ms: int = 400) -> None:
         await page.evaluate(
-            """
-            async () => {
+            f"""
+            async () => {{
               const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-              const maxScrolls = 8;
-              for (let i = 0; i < maxScrolls; i += 1) {
+              for (let i = 0; i < {max_scrolls}; i += 1) {{
                 window.scrollTo(0, document.body.scrollHeight);
-                await delay(250);
-              }
+                await delay({delay_ms});
+              }}
               window.scrollTo(0, 0);
-            }
+            }}
             """
         )
 
@@ -163,7 +346,8 @@ class CDPCrawler:
         response: Any,
         responses: list[NetworkSnippet],
     ) -> None:
-        if len(responses) >= self.settings.max_responses:
+        max_resp = self._max_responses_override or self.settings.max_responses
+        if len(responses) >= max_resp:
             return
 
         content_type = response.headers.get("content-type", "")
@@ -183,8 +367,9 @@ class CDPCrawler:
         body = clean_text(body)
         if not body:
             return
-        if len(body) > self.settings.max_response_chars:
-            body = body[: self.settings.max_response_chars] + "\n...[truncated]"
+        max_chars = self._max_response_chars_override or self.settings.max_response_chars
+        if len(body) > max_chars:
+            body = body[:max_chars] + "\n...[truncated]"
 
         responses.append(
             NetworkSnippet(

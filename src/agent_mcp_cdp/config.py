@@ -6,12 +6,24 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# DEFAULT_TARGET_URL = (
+#     "https://bjedures.bjedu.cn/ggzypt/#/ai/mark/detail"
+#     "?id=9c7f91783fb83cc08aa98036f939b4e2"
+#     "&name=%E9%A3%9E%E8%B1%A1%E6%99%BA%E8%83%BD%E4%BD%9C%E4%B8%9A"
+# )
+
+# DEFAULT_TARGET_URL = (
+#     "https://bjedures.bjedu.cn/ggzypt/#/ai/mark/detail"
+#     "?id=86fdf77a1b803de294ba442aa7e341cd"
+#     "&name=AIBOOK%20人工智能%20AI%20教育实训一体机"
+# )
+# DEFAULT_PRODUCT_NAME = "AIBOOK 人工智能 AI 教育实训一体机"
+
 DEFAULT_TARGET_URL = (
-    "https://bjedures.bjedu.cn/ggzypt/#/ai/mark/detail"
-    "?id=9c7f91783fb83cc08aa98036f939b4e2"
-    "&name=%E9%A3%9E%E8%B1%A1%E6%99%BA%E8%83%BD%E4%BD%9C%E4%B8%9A"
+    "https://bjedures.bjedu.cn/ggzypt/#/ai/mark/detail?id=d2f86dc826363941840a28c0d084431f&name=%E4%B9%9D%E7%AB%A0%E7%88%B1%E5%AD%A6"
 )
-DEFAULT_PRODUCT_NAME = "飞象智能作业"
+DEFAULT_PRODUCT_NAME = "九章爱学"
+DEFAULT_LISTING_URL = "https://bjedures.bjedu.cn/ggzypt/#/ai/mark/index"
 
 
 def _truthy(value: str | None, default: bool) -> bool:
@@ -41,6 +53,10 @@ class Settings:
     navigation_timeout_ms: int = 60000
     max_response_chars: int = 8000
     max_responses: int = 16
+    listing_url: str = DEFAULT_LISTING_URL
+    listing_wait_after_load_ms: int = 8000
+    listing_max_response_chars: int = 262144
+    search_confidence_threshold: float = 0.3
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_model: str = "gpt-4o-mini"
@@ -63,6 +79,16 @@ class Settings:
             "navigation_timeout_ms": int(os.getenv("NAVIGATION_TIMEOUT_MS", "60000")),
             "max_response_chars": int(os.getenv("MAX_RESPONSE_CHARS", "8000")),
             "max_responses": int(os.getenv("MAX_RESPONSES", "16")),
+            "listing_url": os.getenv("LISTING_URL", DEFAULT_LISTING_URL),
+            "listing_wait_after_load_ms": int(
+                os.getenv("LISTING_WAIT_AFTER_LOAD_MS", "8000")
+            ),
+            "listing_max_response_chars": int(
+                os.getenv("LISTING_MAX_RESPONSE_CHARS", "262144")
+            ),
+            "search_confidence_threshold": float(
+                os.getenv("SEARCH_CONFIDENCE_THRESHOLD", "0.3")
+            ),
             "openai_api_key": _optional(os.getenv("OPENAI_API_KEY")),
             "openai_base_url": _optional(os.getenv("OPENAI_BASE_URL")),
             "openai_model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),

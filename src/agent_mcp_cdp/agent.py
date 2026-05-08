@@ -17,6 +17,16 @@ class ProductFeatureAgent:
         warnings: list[str] = []
         source = crawl.source_text()
 
+        if len(source.strip()) < 50:
+            return ProductFeatures(
+                product_name=product_name,
+                summary="页面内容不足，无法提取产品功能。",
+                warnings=[
+                    "抓取产出文本过少，请检查列表页/搜索步骤或页面是否需要登录。"
+                ],
+                llm_used=False,
+            )
+
         if self.use_llm and self.settings.openai_api_key:
             try:
                 return await self._extract_with_llm(source, product_name)

@@ -11,6 +11,7 @@ from .agent import ProductFeatureAgent
 from .cdp_browser import CDPCrawler
 from .config import DEFAULT_PRODUCT_NAME, DEFAULT_TARGET_URL, Settings
 from .mcp_server import run_mcp
+from .models import CrawlResult
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -41,6 +42,21 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument("--headed", action="store_true", help="show the browser window")
     crawl.add_argument("--wait-ms", type=int)
     crawl.add_argument("--no-llm", action="store_true", help="force rule-based extraction")
+    crawl.add_argument(
+        "--search", "-s",
+        action="store_true",
+        help="search for product by name on the listing page",
+    )
+    crawl.add_argument(
+        "--confidence",
+        type=float,
+        help="override search confidence threshold (default 0.3)",
+    )
+    crawl.add_argument(
+        "--list-only",
+        action="store_true",
+        help="list available products without crawling a detail page",
+    )
 
     subparsers.add_parser("mcp", help="start the MCP stdio server")
     return parser
@@ -48,6 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def run_crawl(args: argparse.Namespace) -> None:
     output_dir = args.output_dir or default_run_dir()
+    use_search = args.search or args.list_only
+
     settings = Settings.from_env(
         target_url=args.url,
         product_name=args.product_name,
@@ -57,9 +75,42 @@ async def run_crawl(args: argparse.Namespace) -> None:
         wait_after_load_ms=args.wait_ms,
         output_dir=output_dir,
     )
+    if args.confidence is not None:
+        settings.search_confidence_threshold = args.confidence
 
     crawler = CDPCrawler(settings)
-    crawl = await crawler.crawl(settings.target_url, output_dir)
+    crawl: CrawlResult | None = None
+    search_result = None
+
+    if use_search:
+        print(f"搜索产品「{settings.product_name}」...")
+        crawl, search_result = await crawler.search_product(
+            settings.product_name, output_dir
+        )
+        if search_result and search_result.matched_entry:
+            print(
+                f"匹配到: {search_result.matched_entry.name}"
+                f"（置信度: {search_result.confidence:.2f}）"
+            )
+        if search_result and search_result.warnings:
+            for w in search_result.warnings:
+                print(f"  [WARNING] {w}")
+        if args.list_only:
+            crawl = None
+    else:
+        crawl = await crawler.crawl(settings.target_url, output_dir)
+
+    if crawl is None:
+        if search_result and search_result.candidates:
+            print(f"\n可用产品列表（共 {len(search_result.candidates)} 个）：")
+            for i, entry in enumerate(search_result.candidates, 1):
+                parts = [f"{i}. {entry.name}"]
+                if entry.client_name:
+                    parts.append(f"({entry.client_name})")
+                if entry.introduction:
+                    parts.append(f"\n   {entry.introduction[:100]}")
+                print(" ".join(parts))
+        return
 
     agent = ProductFeatureAgent(settings, use_llm=not args.no_llm)
     features = await agent.extract(crawl, settings.product_name)
@@ -68,6 +119,11 @@ async def run_crawl(args: argparse.Namespace) -> None:
         "crawl": crawl.to_dict(),
         "product_features": features.to_dict(),
     }
+    if search_result and search_result.matched_entry:
+        payload["search"] = {
+            "query": search_result.query,
+            "confidence": search_result.confidence,
+        }
     write_json(output_dir / "result.json", payload)
     write_markdown(output_dir / "features.md", payload)
 
