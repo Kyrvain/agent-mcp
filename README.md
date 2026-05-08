@@ -101,7 +101,7 @@ OPENAI_MODEL=gpt-4o-mini
 
 ## 接入 Claude Code
 
-编辑 `C:\Users\<用户名>\.claude.json`，在 `mcpServers` 中添加：
+MCP Servers 配置在用户级全局文件 `C:\Users\<用户名>\.claude.json`（不是 `.claude\settings.json`）。在 `mcpServers` 中添加：
 
 ```json
 "agent-mcp-cdp": {
@@ -110,6 +110,11 @@ OPENAI_MODEL=gpt-4o-mini
   "env": {}
 }
 ```
+
+> `.claude.json` — MCP servers、项目注册等全局配置，由 Claude Code 自动管理（`/mcp` 面板操作的也是这个文件）。
+> `.claude\settings.json` — 权限、hooks、环境变量等，分用户级和项目级，用户手动编辑。
+>
+> MCP Server 是全局基础设施，不绑定单个项目，所以放在 `.claude.json` 而非 `settings.json`。
 
 重启 Claude Code 后，对话中可以直接用自然语言调用：
 
