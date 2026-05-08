@@ -99,15 +99,23 @@ OPENAI_MODEL=gpt-4o-mini
 
 国内模型厂商只要兼容 OpenAI Chat Completions，也可以填自己的 `OPENAI_BASE_URL` 和模型名。
 
-## 启动 MCP Server
+## 接入 Claude Code
 
-```powershell
-.venv\Scripts\python.exe -m agent_mcp_cdp mcp
+编辑 `C:\Users\<用户名>\.claude.json`，在 `mcpServers` 中添加：
+
+```json
+"agent-mcp-cdp": {
+  "command": "d:/Projections/agent-mcp/.venv/Scripts/python.exe",
+  "args": ["-m", "agent_mcp_cdp", "mcp"],
+  "env": {}
+}
 ```
 
-MCP 工具名：`crawl_product_features`
+重启 Claude Code 后，对话中可以直接用自然语言调用：
 
-参数：
+> 查一下飞象智能作业的产品功能
+
+MCP 工具名：`crawl_product_features`
 
 | 参数 | 类型 | 默认 | 说明 |
 |------|------|------|------|
