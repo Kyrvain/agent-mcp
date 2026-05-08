@@ -88,16 +88,12 @@ class CDPCrawler:
                         process.kill()
 
     async def _crawl_catalog_source(self, output_dir: Path | None = None) -> CrawlResult:
-        """Get product catalog from the listing page's 智链货架 via 2-step SPA navigation.
-
-        Navigates to a detail page first to establish an anti-bot session, then uses
-        SPA hash routing to reach the listing page and triggers lazy-load pagination.
-        """
+        """Crawl the listing page's 智链货架 directly for the full product catalog."""
         output_dir = output_dir or self.settings.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
 
         self._max_response_chars_override = self.settings.listing_max_response_chars
-        self._max_responses_override = 128  # enough for all paginated pages
+        self._max_responses_override = 128
 
         async with async_playwright() as playwright:
             browser, process, browser_mode = await self._connect_or_launch(playwright)
@@ -118,29 +114,19 @@ class CDPCrawler:
                     self._capture_response(response, responses)
                 ))
 
-                # Step 1: warm up session via detail page
+                # Navigate directly to the listing page
                 await page.goto(
-                    self.settings.target_url,
+                    self.settings.listing_url,
                     wait_until="domcontentloaded",
                     timeout=self.settings.navigation_timeout_ms,
                 )
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=15000)
-                except PlaywrightTimeoutError:
-                    pass
-                await page.wait_for_timeout(3000)
-                responses.clear()
-
-                # Step 2: navigate to listing page via SPA router (hash change)
-                await page.evaluate("window.location.hash = '#/ai/mark/index'")
-                await page.wait_for_timeout(3000)
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=15000)
+                    await page.wait_for_load_state("networkidle", timeout=20000)
                 except PlaywrightTimeoutError:
                     pass
                 await page.wait_for_timeout(self.settings.listing_wait_after_load_ms)
 
-                # Step 3: paginate through all pages of each shelf
+                # Paginate through all pages of each shelf
                 await self._paginate_all_shelves(page)
 
                 title = await page.title()
