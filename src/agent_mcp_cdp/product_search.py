@@ -94,6 +94,7 @@ async def _match_with_llm(
     client = AsyncOpenAI(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
+        timeout=120.0,
     )
 
     catalog_lines = []
@@ -109,7 +110,6 @@ async def _match_with_llm(
     response = await client.chat.completions.create(
         model=settings.openai_model,
         temperature=0.0,
-        response_format={"type": "json_object"},
         messages=[
             {
                 "role": "system",

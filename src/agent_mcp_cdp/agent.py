@@ -45,25 +45,25 @@ class ProductFeatureAgent:
         client = AsyncOpenAI(
             api_key=self.settings.openai_api_key,
             base_url=self.settings.openai_base_url,
+            timeout=120.0,
         )
         context = source[:28000]
         response = await client.chat.completions.create(
             model=self.settings.openai_model,
             temperature=0.1,
-            response_format={"type": "json_object"},
             messages=[
                 {
                     "role": "system",
                     "content": (
                         "你是教育产品和招投标页面分析智能体。"
                         "只基于用户提供的抓取材料提取信息；不确定时写入 warnings。"
+                        "严格输出 JSON，字段：product_name, summary, features, evidence, warnings。"
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
                         f"请从下面抓取材料中提取「{product_name}」的产品功能。\n"
-                        "输出 JSON，字段必须为：product_name, summary, features, evidence, warnings。\n"
                         "features 是中文字符串数组，每项是一个明确功能；"
                         "evidence 是支撑功能判断的短证据文本数组。\n\n"
                         f"抓取材料：\n{context}"
