@@ -87,7 +87,11 @@ class CDPCrawler:
                     except subprocess.TimeoutExpired:
                         process.kill()
 
-    async def _crawl_catalog_source(self, output_dir: Path | None = None) -> CrawlResult:
+    async def _crawl_catalog_source(
+        self,
+        output_dir: Path | None = None,
+        search_product: str | None = None,
+    ) -> CrawlResult:
         """Crawl the listing page's 智链货架 directly for the full product catalog."""
         output_dir = output_dir or self.settings.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -126,8 +130,12 @@ class CDPCrawler:
                     pass
                 await page.wait_for_timeout(self.settings.listing_wait_after_load_ms)
 
-                # Paginate through all pages of each shelf
-                await self._paginate_all_shelves(page)
+                if search_product:
+                    responses.clear()
+                    await self._search_listing_by_name(page, search_product)
+                else:
+                    # Paginate only when collecting the full product catalog.
+                    await self._paginate_all_shelves(page)
 
                 title = await page.title()
                 text = await self._body_text(page)
@@ -160,11 +168,17 @@ class CDPCrawler:
                         process.kill()
 
     async def search_product(
-        self, product_name: str, output_dir: Path | None = None
+        self,
+        product_name: str,
+        output_dir: Path | None = None,
+        use_search_box: bool = True,
     ) -> tuple[CrawlResult | None, ProductSearchResult]:
         result = ProductSearchResult(query=product_name)
 
-        catalog_crawl = await self._crawl_catalog_source(output_dir=output_dir)
+        catalog_crawl = await self._crawl_catalog_source(
+            output_dir=output_dir,
+            search_product=product_name if use_search_box else None,
+        )
         entries = parse_product_list(catalog_crawl)
 
         if not entries:
@@ -287,6 +301,58 @@ class CDPCrawler:
 
             if not clicked:
                 break
+
+    async def _search_listing_by_name(self, page: Page, product_name: str) -> None:
+        """Use the listing page's 名称 search box instead of paginating every shelf."""
+        await self._fill_listing_name_input(page, product_name)
+        button = page.locator("button:has-text('查询')").first
+        await button.wait_for(timeout=5000)
+        try:
+            async with page.expect_response(
+                lambda response: "dse/service.do" in response.url,
+                timeout=15000,
+            ):
+                await button.click(timeout=5000)
+        except PlaywrightTimeoutError:
+            pass
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15000)
+        except PlaywrightTimeoutError:
+            pass
+        await page.wait_for_timeout(3000)
+
+    async def _fill_listing_name_input(self, page: Page, product_name: str) -> None:
+        inputs = page.locator("input.el-input__inner:not([readonly])")
+        if await inputs.count():
+            await inputs.first.fill(product_name, timeout=5000)
+            return
+
+        filled = await page.evaluate(
+            """
+            (productName) => {
+              const labels = Array.from(document.querySelectorAll(
+                '.el-form-item__label,label,span,div'
+              ));
+              for (const label of labels) {
+                if ((label.textContent || '').trim() !== '名称') {
+                  continue;
+                }
+                const container = label.closest('.el-form-item') || label.parentElement;
+                const input = container && container.querySelector('input');
+                if (input) {
+                  input.value = productName;
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.dispatchEvent(new Event('change', { bubbles: true }));
+                  return true;
+                }
+              }
+              return false;
+            }
+            """,
+            product_name,
+        )
+        if not filled:
+            raise RuntimeError("Could not find the listing page name search input.")
 
     async def _settle_page(self, page: Page) -> None:
         try:

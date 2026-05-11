@@ -5,14 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-mcp-cdp"
 version = "0.1.0"
-description = "LLM agent + MCP + CDP crawler for product feature extraction."
+description = "MCP + CDP crawler for product feature extraction."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "beautifulsoup4>=4.12.3",
   "httpx>=0.27.0",
   "mcp>=1.2.0",
-  "openai>=1.55.0",
   "playwright>=1.49.0",
   "python-dotenv>=1.0.1",
 ]

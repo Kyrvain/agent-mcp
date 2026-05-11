@@ -12,6 +12,7 @@ from .cdp_browser import CDPCrawler
 from .config import DEFAULT_PRODUCT_NAME, DEFAULT_TARGET_URL, Settings
 from .mcp_server import run_mcp
 from .models import CrawlResult
+from .proofreading import ProofreadingClient
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -29,7 +30,7 @@ def main(argv: list[str] | None = None) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-mcp-cdp",
-        description="Use CDP + MCP + an LLM agent to extract product features.",
+        description="Use CDP + MCP to extract product features.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -41,7 +42,6 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument("--browser-executable")
     crawl.add_argument("--headed", action="store_true", help="show the browser window")
     crawl.add_argument("--wait-ms", type=int)
-    crawl.add_argument("--no-llm", action="store_true", help="force rule-based extraction")
     crawl.add_argument(
         "--search", "-s",
         action="store_true",
@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-only",
         action="store_true",
         help="list available products without crawling a detail page",
+    )
+    crawl.add_argument(
+        "--no-proofread",
+        action="store_true",
+        help="skip sending crawled product details to the proofreading service",
     )
 
     subparsers.add_parser("mcp", help="start the MCP stdio server")
@@ -85,7 +90,9 @@ async def run_crawl(args: argparse.Namespace) -> None:
     if use_search:
         print(f"搜索产品「{settings.product_name}」...")
         crawl, search_result = await crawler.search_product(
-            settings.product_name, output_dir
+            settings.product_name,
+            output_dir,
+            use_search_box=not args.list_only,
         )
         if search_result and search_result.matched_entry:
             print(
@@ -112,26 +119,45 @@ async def run_crawl(args: argparse.Namespace) -> None:
                 print(" ".join(parts))
         return
 
-    agent = ProductFeatureAgent(settings, use_llm=not args.no_llm)
+    agent = ProductFeatureAgent(settings)
     features = await agent.extract(crawl, settings.product_name)
+    proofreading = None
+    if not args.no_proofread:
+        proofreading = await ProofreadingClient(settings).proofread_features(features)
 
     payload: dict[str, Any] = {
         "crawl": crawl.to_dict(),
         "product_features": features.to_dict(),
     }
+    agent_response = features.to_dict()
+    if proofreading is not None:
+        payload["proofreading"] = proofreading.to_dict()
+        agent_response["proofreading"] = proofreading.to_dict()
     if search_result and search_result.matched_entry:
         payload["search"] = {
             "query": search_result.query,
             "confidence": search_result.confidence,
         }
     write_json(output_dir / "result.json", payload)
+    write_json(output_dir / "agent_response.json", agent_response)
     write_markdown(output_dir / "features.md", payload)
 
     print(f"Output: {output_dir}")
     print(f"Browser: {crawl.browser_mode}")
     print(f"Title: {crawl.title}")
     print(f"Product: {features.product_name}")
-    print(f"LLM used: {features.llm_used}")
+    if proofreading is not None:
+        if proofreading.error:
+            print(f"Proofreading error: {proofreading.error}")
+        else:
+            suggestion_count = (
+                len(proofreading.result)
+                if isinstance(proofreading.result, list)
+                else 0
+            )
+            correct_status = "yes" if proofreading.correct else "no"
+            print(f"Proofreading suggestions: {suggestion_count}")
+            print(f"Proofreading correct available: {correct_status}")
     if features.features:
         print("Features:")
         for item in features.features:
@@ -164,7 +190,6 @@ def write_markdown(path: Path, payload: dict[str, Any]) -> None:
         f"- URL: {crawl['final_url']}",
         f"- 标题: {crawl['title']}",
         f"- 浏览器模式: {crawl['browser_mode']}",
-        f"- LLM used: {features['llm_used']}",
         "",
         "## 摘要",
         "",
@@ -185,4 +210,18 @@ def write_markdown(path: Path, payload: dict[str, Any]) -> None:
     if features["warnings"]:
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- {item}" for item in features["warnings"])
+    proofreading = payload.get("proofreading")
+    if proofreading:
+        lines.extend(["", "## Proofreading", ""])
+        if proofreading.get("error"):
+            lines.append(f"- Error: {proofreading['error']}")
+        else:
+            result = proofreading.get("result")
+            suggestion_count = len(result) if isinstance(result, list) else 0
+            lines.append(f"- Suggestions: {suggestion_count}")
+            correct = proofreading.get("correct")
+            if correct:
+                lines.append(f"- Correct: {correct}")
+            if result:
+                lines.append(f"- Result: {result}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

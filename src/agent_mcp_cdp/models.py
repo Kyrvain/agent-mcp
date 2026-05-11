@@ -66,8 +66,40 @@ class ProductFeatures:
     summary: str
     features: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
-    llm_used: bool = False
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        return {
+            "product_name": self.product_name,
+            "summary": self.summary,
+            "features": list(self.features),
+            "evidence": list(self.evidence),
+            "warnings": [
+                item
+                for item in self.warnings
+                if not _is_removed_extraction_warning(item)
+            ],
+        }
+
+
+@dataclass(slots=True)
+class ProofreadingResult:
+    service_url: str | None
+    correct: str | None = None
+    result: Any = None
+    raw_response: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _is_removed_extraction_warning(value: str) -> bool:
+    lowered = value.lower()
+    return any(
+        token in lowered
+        for token in (
+            "api_key",
+            "规则提取",
+        )
+    )

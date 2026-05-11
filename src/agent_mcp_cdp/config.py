@@ -6,25 +6,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# DEFAULT_TARGET_URL = (
-#     "https://bjedures.bjedu.cn/ggzypt/#/ai/mark/detail"
-#     "?id=9c7f91783fb83cc08aa98036f939b4e2"
-#     "&name=%E9%A3%9E%E8%B1%A1%E6%99%BA%E8%83%BD%E4%BD%9C%E4%B8%9A"
-# )
-
-# DEFAULT_TARGET_URL = (
-#     "https://bjedures.bjedu.cn/ggzypt/#/ai/mark/detail"
-#     "?id=86fdf77a1b803de294ba442aa7e341cd"
-#     "&name=AIBOOK%20人工智能%20AI%20教育实训一体机"
-# )
-# DEFAULT_PRODUCT_NAME = "AIBOOK 人工智能 AI 教育实训一体机"
-
+DEFAULT_LISTING_URL = "https://bjedures.bjedu.cn/ggzypt/#/ai/mark/index"
+DEFAULT_PRODUCT_NAME = "九章爱学"
 DEFAULT_TARGET_URL = (
     "https://bjedures.bjedu.cn/ggzypt/#/ai/mark/detail?id=d2f86dc826363941840a28c0d084431f&name=%E4%B9%9D%E7%AB%A0%E7%88%B1%E5%AD%A6"
 )
-DEFAULT_PRODUCT_NAME = "九章爱学"
-DEFAULT_LISTING_URL = "https://bjedures.bjedu.cn/ggzypt/#/ai/mark/index"
-
 
 def _truthy(value: str | None, default: bool) -> bool:
     if value is None or value == "":
@@ -57,9 +43,9 @@ class Settings:
     listing_wait_after_load_ms: int = 8000
     listing_max_response_chars: int = 262144
     search_confidence_threshold: float = 0.3
-    openai_api_key: str | None = None
-    openai_base_url: str | None = None
-    openai_model: str = "gpt-4o-mini"
+    proofreading_api_url: str | None = "http://10.199.194.160:22235/api"
+    proofreading_timeout_s: float = 30.0
+    proofreading_max_chars: int = 20000
 
     @classmethod
     def from_env(cls, **overrides: object) -> "Settings":
@@ -89,9 +75,11 @@ class Settings:
             "search_confidence_threshold": float(
                 os.getenv("SEARCH_CONFIDENCE_THRESHOLD", "0.3")
             ),
-            "openai_api_key": _optional(os.getenv("OPENAI_API_KEY")),
-            "openai_base_url": _optional(os.getenv("OPENAI_BASE_URL")),
-            "openai_model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            "proofreading_api_url": _optional(
+                os.getenv("PROOFREADING_API_URL", "http://10.199.194.160:22235/api")
+            ),
+            "proofreading_timeout_s": float(os.getenv("PROOFREADING_TIMEOUT_S", "30")),
+            "proofreading_max_chars": int(os.getenv("PROOFREADING_MAX_CHARS", "20000")),
         }
         values.update({key: value for key, value in overrides.items() if value is not None})
         return cls(**values)

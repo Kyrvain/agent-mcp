@@ -1,4 +1,4 @@
-"""LLM agent + MCP + CDP crawler."""
+"""MCP + CDP crawler for product feature extraction."""
 
 __all__ = ["__version__"]
 

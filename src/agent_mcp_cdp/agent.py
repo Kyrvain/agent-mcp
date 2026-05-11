@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-import json
 import re
-from typing import Any
 
 from .config import Settings
 from .models import CrawlResult, ProductFeatures
 
 
 class ProductFeatureAgent:
-    def __init__(self, settings: Settings, use_llm: bool = True) -> None:
+    def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.use_llm = use_llm
 
     async def extract(self, crawl: CrawlResult, product_name: str) -> ProductFeatures:
-        warnings: list[str] = []
         source = crawl.source_text()
 
         if len(source.strip()) < 50:
@@ -24,63 +20,9 @@ class ProductFeatureAgent:
                 warnings=[
                     "抓取产出文本过少，请检查列表页/搜索步骤或页面是否需要登录。"
                 ],
-                llm_used=False,
             )
 
-        if self.use_llm and self.settings.openai_api_key:
-            try:
-                return await self._extract_with_llm(source, product_name)
-            except Exception as exc:
-                warnings.append(f"LLM 提取失败，已切换到规则提取：{exc}")
-
-        result = self._extract_with_rules(source, product_name)
-        result.warnings.extend(warnings)
-        if not self.settings.openai_api_key:
-            result.warnings.append("未配置 OPENAI_API_KEY，本次使用规则提取。")
-        return result
-
-    async def _extract_with_llm(self, source: str, product_name: str) -> ProductFeatures:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(
-            api_key=self.settings.openai_api_key,
-            base_url=self.settings.openai_base_url,
-            timeout=120.0,
-        )
-        context = source[:28000]
-        response = await client.chat.completions.create(
-            model=self.settings.openai_model,
-            temperature=0.1,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是教育产品和招投标页面分析智能体。"
-                        "只基于用户提供的抓取材料提取信息；不确定时写入 warnings。"
-                        "严格输出 JSON，字段：product_name, summary, features, evidence, warnings。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"请从下面抓取材料中提取「{product_name}」的产品功能。\n"
-                        "features 是中文字符串数组，每项是一个明确功能；"
-                        "evidence 是支撑功能判断的短证据文本数组。\n\n"
-                        f"抓取材料：\n{context}"
-                    ),
-                },
-            ],
-        )
-        content = response.choices[0].message.content or "{}"
-        payload = parse_json_object(content)
-        return ProductFeatures(
-            product_name=str(payload.get("product_name") or product_name),
-            summary=str(payload.get("summary") or ""),
-            features=string_list(payload.get("features")),
-            evidence=string_list(payload.get("evidence")),
-            warnings=string_list(payload.get("warnings")),
-            llm_used=True,
-        )
+        return self._extract_with_rules(source, product_name)
 
     def _extract_with_rules(self, source: str, product_name: str) -> ProductFeatures:
         exact_features = extract_product_function_section(source)
@@ -91,7 +33,6 @@ class ProductFeatureAgent:
                 summary=summary,
                 features=exact_features,
                 evidence=exact_features[:8],
-                llm_used=False,
             )
 
         lines = normalize_lines(source)
@@ -133,7 +74,6 @@ class ProductFeatureAgent:
             summary=summary,
             features=features,
             evidence=evidence[:8],
-            llm_used=False,
             warnings=warnings,
         )
 
@@ -190,25 +130,6 @@ def build_feature_candidates(evidence: list[str], product_name: str) -> list[str
     if not features and evidence:
         features = [f"围绕 {product_name} 页面文本中的作业与教学场景提供功能支持。"]
     return dedupe(features)
-
-
-def parse_json_object(content: str) -> dict[str, Any]:
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", content, flags=re.S)
-        if match:
-            return json.loads(match.group(0))
-        raise
-
-
-def string_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    text = str(value).strip()
-    return [text] if text else []
 
 
 def dedupe(values: list[str]) -> list[str]:

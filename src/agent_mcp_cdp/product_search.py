@@ -6,7 +6,6 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
-from .config import Settings
 from .models import CrawlResult
 
 
@@ -69,73 +68,13 @@ def parse_product_list(crawl: CrawlResult) -> list[ProductListEntry]:
 async def match_product(
     query: str,
     entries: list[ProductListEntry],
-    settings: Settings,
+    _settings: object | None = None,
 ) -> tuple[ProductListEntry | None, float, list[str]]:
-    """Match user query to best product entry. Uses LLM if available, else keyword scoring."""
+    """Match user query to the best product entry using keyword scoring."""
     if not entries:
         return None, 0.0, ["列表页未返回任何产品。"]
 
-    if settings.openai_api_key:
-        try:
-            return await _match_with_llm(query, entries, settings)
-        except Exception:
-            pass
-
     return _match_with_keywords(query, entries)
-
-
-async def _match_with_llm(
-    query: str,
-    entries: list[ProductListEntry],
-    settings: Settings,
-) -> tuple[ProductListEntry | None, float, list[str]]:
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
-        timeout=120.0,
-    )
-
-    catalog_lines = []
-    for i, entry in enumerate(entries):
-        parts = [entry.name]
-        if entry.client_name:
-            parts.append(entry.client_name)
-        if entry.introduction:
-            parts.append(entry.introduction[:120])
-        catalog_lines.append(f"{i + 1}. {' - '.join(parts)}")
-    catalog = "\n".join(catalog_lines)
-
-    response = await client.chat.completions.create(
-        model=settings.openai_model,
-        temperature=0.0,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "你是产品搜索匹配助手。请根据用户查询从候选产品列表中选择最匹配的产品。"
-                    "只返回 JSON，字段：matched_index（整数，从1开始）, confidence（0-1浮点数）, reasoning（字符串）。"
-                    "如果没有匹配的产品，matched_index 设为 0。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"查询：{query}\n\n候选产品：\n{catalog}",
-            },
-        ],
-    )
-
-    content = response.choices[0].message.content or "{}"
-    result = json.loads(content)
-    idx = int(result.get("matched_index", 0))
-    confidence = float(result.get("confidence", 0.0))
-
-    if idx <= 0 or idx > len(entries):
-        return None, 0.0, [f"LLM 未找到匹配产品。推理：{result.get('reasoning', '无')}"]
-
-    matched = entries[idx - 1]
-    return matched, confidence, []
 
 
 def _match_with_keywords(
