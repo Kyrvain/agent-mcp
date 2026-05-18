@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import json
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-from .agent import ProductFeatureAgent
-from .cdp_browser import CDPCrawler
 from .config import DEFAULT_PRODUCT_NAME, DEFAULT_TARGET_URL, Settings
-from .proofreading import ProofreadingClient
+from .schemas.payloads import build_search_response
+from .services.crawl_workflow import CrawlWorkflow
+from .services.output_writer import default_run_dir, write_run_outputs
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -45,50 +42,20 @@ if mcp is not None:
             product_name=product_name,
             wait_after_load_ms=wait_ms,
         )
-        crawler = CDPCrawler(settings)
-
-        if url is None or list_only:
-            crawl, result = await crawler.search_product(
-                product_name,
-                use_search_box=not list_only,
-            )
-            if list_only or crawl is None:
-                return {
-                    "search": {
-                        "query": product_name,
-                        "matched": result.matched_entry is not None,
-                        "confidence": result.confidence,
-                        "warnings": result.warnings,
-                        "candidates": [
-                            {
-                                "id": e._id,
-                                "name": e.name,
-                                "client_name": e.client_name,
-                                "introduction": e.introduction,
-                            }
-                            for e in result.candidates[:20]
-                        ],
-                    }
-                }
-        else:
-            crawl = await crawler.crawl(settings.target_url)
-
-        agent = ProductFeatureAgent(settings)
-        features = await agent.extract(crawl, product_name)
-        proofreading = None
-        if proofread:
-            proofreading = await ProofreadingClient(settings).proofread_features(features)
-
-        response = features.to_dict()
-        if proofreading is not None:
-            response["proofreading"] = proofreading.to_dict()
-        _save_full(
-            crawl.to_dict(),
-            features.to_dict(),
-            response,
-            proofreading.to_dict() if proofreading else None,
+        workflow = CrawlWorkflow(settings)
+        workflow_result = await workflow.run(
+            use_search=url is None or list_only,
+            list_only=list_only,
+            proofread=proofread,
+            output_dir=None,
         )
-        return response
+
+        if list_only or workflow_result.crawl is None:
+            return build_search_response(workflow_result.search_result)
+
+        if workflow_result.result_payload and workflow_result.agent_response:
+            _save_full(workflow_result.result_payload, workflow_result.agent_response)
+        return workflow_result.agent_response or {}
 
 
 def _runs_dir() -> Path:
@@ -96,63 +63,11 @@ def _runs_dir() -> Path:
 
 
 def _save_full(
-    crawl: dict[str, Any],
-    features: dict[str, Any],
-    agent_response: dict[str, Any],
-    proofreading: dict[str, Any] | None = None,
+    result_payload: dict,
+    agent_response: dict,
 ) -> None:
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = _runs_dir() / f"mcp-{stamp}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    payload = {"crawl": crawl, "product_features": features}
-    if proofreading is not None:
-        payload["proofreading"] = proofreading
-    (run_dir / "result.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    (run_dir / "agent_response.json").write_text(
-        json.dumps(agent_response, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    # features.md
-    lines = [
-        f"# {features['product_name']} 产品功能提取",
-        "",
-        f"- URL: {crawl['final_url']}",
-        f"- 标题: {crawl['title']}",
-        f"- 浏览器模式: {crawl['browser_mode']}",
-        "",
-        "## 摘要", "", features.get("summary") or "无",
-        "",
-        "## 产品功能", "",
-    ]
-    if features.get("features"):
-        lines.extend(f"- {item}" for item in features["features"])
-    else:
-        lines.append("- 未提取到明确功能")
-    lines.extend(["", "## 证据", ""])
-    if features.get("evidence"):
-        lines.extend(f"- {item}" for item in features["evidence"])
-    else:
-        lines.append("- 无")
-    if features.get("warnings"):
-        lines.extend(["", "## Warnings", ""])
-        lines.extend(f"- {item}" for item in features["warnings"])
-    if proofreading:
-        lines.extend(["", "## Proofreading", ""])
-        if proofreading.get("error"):
-            lines.append(f"- Error: {proofreading['error']}")
-        else:
-            result = proofreading.get("result")
-            suggestion_count = len(result) if isinstance(result, list) else 0
-            lines.append(f"- Suggestions: {suggestion_count}")
-            correct = proofreading.get("correct")
-            if correct:
-                lines.append(f"- Correct: {correct}")
-            if result:
-                lines.append(f"- Result: {result}")
-    (run_dir / "features.md").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8"
-    )
+    run_dir = default_run_dir(_runs_dir(), prefix="mcp-")
+    write_run_outputs(run_dir, result_payload, agent_response)
 
 
 def run_mcp() -> None:

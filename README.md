@@ -1,6 +1,6 @@
 # MCP + CDP 产品搜索与功能提取
 
-输入产品名称，自动从北京教育数字资源交易平台的「AI 应用超市」找到匹配产品，爬取详情、提取产品功能，并把提取后的产品功能送入校对服务。
+输入产品名称，自动从北京教育数字资源交易平台的「AI 应用超市」找到匹配产品，爬取详情、提取产品功能，并可按需把提取后的产品功能送入校对服务。
 
 数据来源：`https://bjedures.bjedu.cn/ggzypt/#/ai/mark/index`（智链货架）
 
@@ -8,7 +8,7 @@
 
 ### 搜索模式（推荐）
 
-输入自然语言产品名称，系统会在「智链货架」页面的名称搜索框中查询，匹配产品后导航到详情页、提取功能并校对：
+输入自然语言产品名称，系统会在「智链货架」页面的名称搜索框中查询，匹配产品后导航到详情页并提取功能；如需校对，额外传 `--proofread`：
 
 ```powershell
 # 搜索产品
@@ -31,11 +31,30 @@
 | 模块 | 文件 | 作用 |
 |------|------|------|
 | CDP crawler | `cdp_browser.py` | 通过 Chrome DevTools Protocol 控制浏览器，使用列表页搜索框查询产品，拦截 API 响应 |
+| 浏览器会话 | `crawlers/browser_session.py` | 统一管理 Chrome/Edge 启动、CDP 连接和浏览器进程关闭 |
 | 产品搜索 | `product_search.py` | 从列表页 API 响应中提取产品目录，并用关键词规则匹配 |
-| 功能提取 | `agent.py` | 用规则从页面材料整理产品功能 |
-| Proofreading | `proofreading.py` | 将 `product_features.features` 拼接后发送到校对服务 |
+| 业务流程 | `services/crawl_workflow.py` | 统一串联爬取、功能提取、校对和 payload 生成 |
+| 功能提取 | `extractors/product_features.py` | 用规则从页面材料整理产品功能 |
+| Proofreading | `services/proofreading.py` | 将 `product_features.features` 拼接后发送到校对服务 |
+| 响应结构 | `schemas/payloads.py` | 统一生成 `result.json` 和 `agent_response.json` 的 JSON 结构 |
+| 输出写入 | `services/output_writer.py` | 统一保存 JSON、Markdown 和运行目录 |
 | MCP server | `mcp_server.py` | 暴露 `crawl_product_features` 为 MCP tool |
 | CLI | `cli.py` | 命令行入口 |
+
+### 架构流程
+
+```text
+CLI / MCP
+  -> CrawlWorkflow
+  -> CDPCrawler
+  -> BrowserSession
+  -> ProductFeatureExtractor
+  -> ProofreadingClient（启用时）
+  -> schemas/payloads.py
+  -> services/output_writer.py
+```
+
+CLI 和 MCP 不直接拼装业务结果，统一由 `CrawlWorkflow` 调度；`result.json` 与 `agent_response.json` 的结构统一由 `schemas/payloads.py` 生成。
 
 ## 工作原理
 
@@ -45,7 +64,7 @@
 4. 拦截搜索后的 `dse/service.do` API JSON 响应，提取候选产品名称、简介、厂商
 5. 用户输入的产品名与候选目录做关键词打分匹配
 6. 匹配成功后导航到对应产品详情页，爬取并提取功能
-7. 将提取后的 `product_features.features` 去除换行后拼接，发送到校对服务
+7. 如果启用校对，将提取后的 `product_features.features` 去除换行后拼接，发送到校对服务
 
 > `--list-only` / `list_only=true` 是全量目录场景，会保留翻页遍历；普通产品搜索不再逐页翻找。
 
@@ -94,7 +113,7 @@ CLI 和 MCP 是两种调用方式，参数不同，功能一一对应。
 | `--confidence N` | 匹配置信度阈值（默认 0.3） |
 | `--headed` | 显示浏览器窗口 |
 | `--wait-ms MS` | 页面加载后额外等待时间 |
-| `--no-proofread` | 跳过校对服务 |
+| `--proofread` | 启用校对服务 |
 | `--cdp-url URL` | 连接已有 CDP 端点 |
 | `--browser-executable PATH` | 指定浏览器路径 |
 | `--output-dir DIR` | 输出目录 |
@@ -122,12 +141,12 @@ crawl_product_features(product_name="飞象智能作业")
 | 搜索产品 | `--search --product-name "飞象"` | `product_name="飞象"` |
 | 直连 URL | `--url "https://..."` | `url="https://..."` |
 | 仅列出产品 | `--search --list-only` | `list_only=true` |
-| 启用校对 | 默认启用 | `proofread=true` |
-| 跳过校对 | `--no-proofread` | 默认跳过 |
+| 启用校对 | `--proofread` | `proofread=true` |
+| 跳过校对 | 默认跳过 | 默认跳过 |
 
 ## 配置校对服务
 
-CLI 默认会把本次提取出的 `product_features.features` 作为产品详情发送到校对服务；MCP 调用中需要传 `proofread=true` 启用校对：
+CLI 默认不调用校对服务；如需把本次提取出的 `product_features.features` 作为产品详情发送到校对服务，请传 `--proofread`。MCP 调用中需要传 `proofread=true` 启用校对：
 
 ```text
 PROOFREADING_API_URL=http://10.199.194.160:22235/api
@@ -137,10 +156,10 @@ PROOFREADING_MAX_CHARS=20000
 
 发送内容只包含提取后的功能列表，不包含原始页面正文、接口响应、summary 或 evidence。拼接前会移除换行符，避免校对服务把换行误判为“多字”。
 
-如需跳过校对：
+如需启用校对：
 
 ```powershell
-.venv\Scripts\python.exe -m agent_mcp_cdp crawl --search --headed --product-name "超星泛雅智慧课程平台" --no-proofread
+.venv\Scripts\python.exe -m agent_mcp_cdp crawl --search --headed --product-name "超星泛雅智慧课程平台" --proofread
 ```
 
 如果要全局禁用校对，可以在 `.env` 中将 `PROOFREADING_API_URL` 留空。
@@ -177,7 +196,7 @@ MCP 工具签名定义在 [mcp_server.py](src/agent_mcp_cdp/mcp_server.py)，当
 
 每次运行在 `data/runs/<时间戳>/` 下生成：
 
-- `result.json` — 完整抓取数据 + 产品功能 + 校对结果
-- `agent_response.json` — 返回给智能体的精简 JSON（产品功能 + 校对结果）
-- `features.md` — Markdown 格式的产品功能和校对报告
+- `result.json` — 完整抓取数据 + 产品功能 + 校对结果（启用时）
+- `agent_response.json` — 返回给智能体的精简 JSON（产品功能 + 校对结果，启用时）
+- `features.md` — Markdown 格式的产品功能和校对报告（启用时）
 - `page.png` — 页面截图（辅助参考）

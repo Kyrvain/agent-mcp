@@ -2,17 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-from .agent import ProductFeatureAgent
-from .cdp_browser import CDPCrawler
 from .config import DEFAULT_PRODUCT_NAME, DEFAULT_TARGET_URL, Settings
 from .mcp_server import run_mcp
-from .models import CrawlResult
-from .proofreading import ProofreadingClient
+from .services.crawl_workflow import CrawlWorkflow
+from .services.output_writer import default_run_dir
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -58,9 +53,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="list available products without crawling a detail page",
     )
     crawl.add_argument(
+        "--proofread",
+        action="store_true",
+        help="send extracted product features to the proofreading service",
+    )
+    crawl.add_argument(
         "--no-proofread",
         action="store_true",
-        help="skip sending crawled product details to the proofreading service",
+        help=argparse.SUPPRESS,
     )
 
     subparsers.add_parser("mcp", help="start the MCP stdio server")
@@ -83,29 +83,28 @@ async def run_crawl(args: argparse.Namespace) -> None:
     if args.confidence is not None:
         settings.search_confidence_threshold = args.confidence
 
-    crawler = CDPCrawler(settings)
-    crawl: CrawlResult | None = None
-    search_result = None
-
     if use_search:
         print(f"搜索产品「{settings.product_name}」...")
-        crawl, search_result = await crawler.search_product(
-            settings.product_name,
-            output_dir,
-            use_search_box=not args.list_only,
+
+    workflow = CrawlWorkflow(settings)
+    workflow_result = await workflow.run(
+        use_search=use_search,
+        list_only=args.list_only,
+        proofread=args.proofread and not args.no_proofread,
+        output_dir=output_dir,
+    )
+
+    crawl = workflow_result.crawl
+    search_result = workflow_result.search_result
+
+    if search_result and search_result.matched_entry:
+        print(
+            f"匹配到: {search_result.matched_entry.name}"
+            f"（置信度: {search_result.confidence:.2f}）"
         )
-        if search_result and search_result.matched_entry:
-            print(
-                f"匹配到: {search_result.matched_entry.name}"
-                f"（置信度: {search_result.confidence:.2f}）"
-            )
-        if search_result and search_result.warnings:
-            for w in search_result.warnings:
-                print(f"  [WARNING] {w}")
-        if args.list_only:
-            crawl = None
-    else:
-        crawl = await crawler.crawl(settings.target_url, output_dir)
+    if search_result and search_result.warnings:
+        for w in search_result.warnings:
+            print(f"  [WARNING] {w}")
 
     if crawl is None:
         if search_result and search_result.candidates:
@@ -119,28 +118,10 @@ async def run_crawl(args: argparse.Namespace) -> None:
                 print(" ".join(parts))
         return
 
-    agent = ProductFeatureAgent(settings)
-    features = await agent.extract(crawl, settings.product_name)
-    proofreading = None
-    if not args.no_proofread:
-        proofreading = await ProofreadingClient(settings).proofread_features(features)
-
-    payload: dict[str, Any] = {
-        "crawl": crawl.to_dict(),
-        "product_features": features.to_dict(),
-    }
-    agent_response = features.to_dict()
-    if proofreading is not None:
-        payload["proofreading"] = proofreading.to_dict()
-        agent_response["proofreading"] = proofreading.to_dict()
-    if search_result and search_result.matched_entry:
-        payload["search"] = {
-            "query": search_result.query,
-            "confidence": search_result.confidence,
-        }
-    write_json(output_dir / "result.json", payload)
-    write_json(output_dir / "agent_response.json", agent_response)
-    write_markdown(output_dir / "features.md", payload)
+    features = workflow_result.features
+    proofreading = workflow_result.proofreading
+    if features is None:
+        return
 
     print(f"Output: {output_dir}")
     print(f"Browser: {crawl.browser_mode}")
@@ -166,62 +147,3 @@ async def run_crawl(args: argparse.Namespace) -> None:
         print("Warnings:")
         for item in features.warnings:
             print(f"- {item}")
-
-
-def default_run_dir() -> Path:
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return Path("data/runs") / stamp
-
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def write_markdown(path: Path, payload: dict[str, Any]) -> None:
-    features = payload["product_features"]
-    crawl = payload["crawl"]
-    lines = [
-        f"# {features['product_name']} 产品功能提取",
-        "",
-        f"- URL: {crawl['final_url']}",
-        f"- 标题: {crawl['title']}",
-        f"- 浏览器模式: {crawl['browser_mode']}",
-        "",
-        "## 摘要",
-        "",
-        features["summary"] or "无",
-        "",
-        "## 产品功能",
-        "",
-    ]
-    if features["features"]:
-        lines.extend(f"- {item}" for item in features["features"])
-    else:
-        lines.append("- 未提取到明确功能")
-    lines.extend(["", "## 证据", ""])
-    if features["evidence"]:
-        lines.extend(f"- {item}" for item in features["evidence"])
-    else:
-        lines.append("- 无")
-    if features["warnings"]:
-        lines.extend(["", "## Warnings", ""])
-        lines.extend(f"- {item}" for item in features["warnings"])
-    proofreading = payload.get("proofreading")
-    if proofreading:
-        lines.extend(["", "## Proofreading", ""])
-        if proofreading.get("error"):
-            lines.append(f"- Error: {proofreading['error']}")
-        else:
-            result = proofreading.get("result")
-            suggestion_count = len(result) if isinstance(result, list) else 0
-            lines.append(f"- Suggestions: {suggestion_count}")
-            correct = proofreading.get("correct")
-            if correct:
-                lines.append(f"- Correct: {correct}")
-            if result:
-                lines.append(f"- Result: {result}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -74,11 +74,7 @@ class ProductFeatures:
             "summary": self.summary,
             "features": list(self.features),
             "evidence": list(self.evidence),
-            "warnings": [
-                item
-                for item in self.warnings
-                if not _is_removed_extraction_warning(item)
-            ],
+            "warnings": list(self.warnings),
         }
 
 
@@ -92,14 +88,3 @@ class ProofreadingResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-def _is_removed_extraction_warning(value: str) -> bool:
-    lowered = value.lower()
-    return any(
-        token in lowered
-        for token in (
-            "api_key",
-            "规则提取",
-        )
-    )
