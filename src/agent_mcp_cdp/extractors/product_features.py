@@ -103,9 +103,36 @@ def extract_product_function_section(source: str) -> list[str]:
 
 def extract_summary(source: str, product_name: str) -> str:
     for line in normalize_lines(source):
+        if is_machine_payload_line(line):
+            continue
         if product_name in line and any(token in line for token in ("覆盖", "支持", "提升", "产品")):
             return line
     return f"根据页面“产品功能”分段提取 {product_name} 的功能描述。"
+
+
+def is_machine_payload_line(line: str) -> bool:
+    compact = line.strip()
+    if not compact:
+        return True
+    if compact.startswith(("{", "[", '",', '","')):
+        return True
+    marker_count = sum(
+        marker in compact
+        for marker in (
+            '"_source"',
+            '"hits"',
+            '"fields"',
+            '"meta_group"',
+            '"icon_file"',
+            '\\"',
+            ":[{",
+        )
+    )
+    if marker_count >= 1:
+        return True
+    quote_count = compact.count('"') + compact.count('\\"')
+    punctuation_count = sum(compact.count(item) for item in ("{", "}", "[", "]", ":"))
+    return quote_count >= 6 and punctuation_count >= 4
 
 
 def normalize_lines(source: str) -> list[str]:

@@ -18,6 +18,8 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(run_crawl(args))
     elif args.command == "mcp":
         run_mcp()
+    elif args.command == "api":
+        run_api(args)
     else:
         parser.print_help()
 
@@ -64,7 +66,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("mcp", help="start the MCP stdio server")
+
+    api = subparsers.add_parser("api", help="start the HTTP API server")
+    api.add_argument("--host", default="127.0.0.1")
+    api.add_argument("--port", type=int, default=8000)
+    api.add_argument("--reload", action="store_true")
     return parser
+
+
+def run_api(args: argparse.Namespace) -> None:
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "Package 'uvicorn' is not installed. Run: pip install -r requirements.txt"
+        ) from exc
+
+    uvicorn.run(
+        "agent_mcp_cdp.api.app:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
 
 
 async def run_crawl(args: argparse.Namespace) -> None:

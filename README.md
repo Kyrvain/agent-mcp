@@ -38,13 +38,14 @@
 | Proofreading | `services/proofreading.py` | 将 `product_features.features` 拼接后发送到校对服务 |
 | 响应结构 | `schemas/payloads.py` | 统一生成 `result.json` 和 `agent_response.json` 的 JSON 结构 |
 | 输出写入 | `services/output_writer.py` | 统一保存 JSON、Markdown 和运行目录 |
+| HTTP API | `api/app.py` | 暴露任务式 HTTP 接口，供前端或系统集成调用 |
 | MCP server | `mcp_server.py` | 暴露 `crawl_product_features` 为 MCP tool |
 | CLI | `cli.py` | 命令行入口 |
 
 ### 架构流程
 
 ```text
-CLI / MCP
+CLI / MCP / HTTP API
   -> CrawlWorkflow
   -> CDPCrawler
   -> BrowserSession
@@ -55,6 +56,68 @@ CLI / MCP
 ```
 
 CLI 和 MCP 不直接拼装业务结果，统一由 `CrawlWorkflow` 调度；`result.json` 与 `agent_response.json` 的结构统一由 `schemas/payloads.py` 生成。
+
+## HTTP API
+
+如果需要给前端或其他系统调用，可以启动 FastAPI HTTP 服务：
+
+```powershell
+.venv\Scripts\python.exe -m agent_mcp_cdp api --host 127.0.0.1 --port 8000
+```
+
+常用接口：
+
+| 方法 | 路径 | 作用 |
+|------|------|------|
+| `GET` | `/api/health` | 健康检查 |
+| `POST` | `/api/crawl-jobs` | 创建爬取任务 |
+| `GET` | `/api/crawl-jobs` | 查看当前进程内任务列表 |
+| `GET` | `/api/crawl-jobs/{job_id}` | 查看任务状态和结果 |
+| `GET` | `/api/runs` | 查看 `data/runs` 历史输出目录 |
+| `GET` | `/api/runs/{run_id}/result` | 读取历史 `result.json` |
+| `GET` | `/api/runs/{run_id}/agent-response` | 读取历史 `agent_response.json` |
+| `GET` | `/api/runs/{run_id}/features` | 读取历史 `features.md` |
+| `GET` | `/api/runs/{run_id}/screenshot` | 读取历史 `page.png` |
+
+创建任务示例：
+
+```json
+{
+  "product_name": "超星泛雅智慧课程平台",
+  "search": true,
+  "proofread": false,
+  "headed": true
+}
+```
+
+API 任务会在后台执行，并串行化爬取流程，避免多个浏览器任务同时争用同一个 CDP 端口或浏览器 profile。进程重启后，任务内存状态会丢失，但 `data/runs` 下的历史结果仍可通过 `/api/runs` 查询。
+
+## Web 操作台
+
+前端位于 `frontend/`，使用 Vue 3 + Vite + TypeScript + Element Plus。开发模式下先启动后端 API：
+
+```powershell
+.venv\Scripts\python.exe -m agent_mcp_cdp api --host 127.0.0.1 --port 8000
+```
+
+再启动前端：
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+默认访问：`http://127.0.0.1:5173`
+
+前端开发服务器会把 `/api` 代理到 `http://127.0.0.1:8000`。当前 Web 操作台包含：
+
+- 爬取任务表单：产品名搜索 / 直连 URL、校对开关、headed 开关、等待时间、匹配阈值
+- 任务状态轮询：排队中、运行中、已完成、失败
+- 结果查看：`agent_response`、`result`、提取出的产品功能
+- 历史结果：读取 `data/runs` 下的 JSON、Markdown 和截图
+
+其中“显示浏览器”是显式运行模式开关：勾选时强制有界面运行；不勾选时强制 headless 运行。站点有脚本挑战时，headless 模式可能返回空白页。
 
 ## 工作原理
 
