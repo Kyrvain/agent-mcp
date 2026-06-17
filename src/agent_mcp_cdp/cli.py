@@ -60,6 +60,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="send extracted product features to the proofreading service",
     )
     crawl.add_argument(
+        "--batch-proofread",
+        action="store_true",
+        help="proofread every product in the cached/full catalog",
+    )
+    crawl.add_argument(
+        "--refresh-catalog",
+        action="store_true",
+        help="refresh the full product catalog cache before batch proofreading",
+    )
+    crawl.add_argument(
+        "--batch-concurrency",
+        type=int,
+        help="number of products to process concurrently in batch proofreading",
+    )
+    crawl.add_argument(
+        "--batch-limit",
+        type=int,
+        help="only process the first N catalog products in batch proofreading",
+    )
+    crawl.add_argument(
         "--no-proofread",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -102,9 +122,32 @@ async def run_crawl(args: argparse.Namespace) -> None:
         browser_headless=False if args.headed else None,
         wait_after_load_ms=args.wait_ms,
         output_dir=output_dir,
+        batch_proofread_concurrency=args.batch_concurrency,
     )
     if args.confidence is not None:
         settings.search_confidence_threshold = args.confidence
+
+    if args.batch_proofread:
+        if args.batch_concurrency is not None and args.batch_concurrency < 1:
+            raise ValueError("--batch-concurrency must be greater than 0")
+        if args.batch_limit is not None and args.batch_limit < 0:
+            raise ValueError("--batch-limit must be greater than or equal to 0")
+        print("批量校对产品目录...")
+        workflow = CrawlWorkflow(settings)
+        batch_result = await workflow.run_batch_proofread(
+            force_refresh_catalog=args.refresh_catalog,
+            limit=args.batch_limit,
+            concurrency=args.batch_concurrency,
+            output_dir=output_dir,
+        )
+        summary = batch_result.agent_response["batch"]
+        print(f"Output: {output_dir}")
+        print(f"Catalog cache: {summary['cache_path']}")
+        print(f"Catalog products: {summary['catalog_count']}")
+        print(f"Processed: {summary['processed_count']}")
+        print(f"Succeeded: {summary['succeeded_count']}")
+        print(f"Failed: {summary['failed_count']}")
+        return
 
     if use_search:
         print(f"搜索产品「{settings.product_name}」...")
@@ -138,6 +181,7 @@ async def run_crawl(args: argparse.Namespace) -> None:
                     parts.append(f"({entry.client_name})")
                 if entry.introduction:
                     parts.append(f"\n   {entry.introduction[:100]}")
+                parts.append(f"\n   {entry.detail_url}")
                 print(" ".join(parts))
         return
 

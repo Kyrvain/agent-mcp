@@ -77,6 +77,8 @@ class Settings:
     listing_wait_after_load_ms: int = 8000
     listing_max_response_chars: int = 262144
     search_confidence_threshold: float = 0.3
+    product_catalog_cache_path: Path = Path("data/product_catalog.json")
+    batch_proofread_concurrency: int = 3
     proofreading_api_url: str | None = "http://10.199.194.160:22235/api"
     proofreading_timeout_s: float = 30.0
     proofreading_max_chars: int = 20000
@@ -106,6 +108,12 @@ class Settings:
             ),
             "search_confidence_threshold": _env_float(
                 "SEARCH_CONFIDENCE_THRESHOLD", 0.3
+            ),
+            "product_catalog_cache_path": Path(
+                _env_str("PRODUCT_CATALOG_CACHE_PATH", "data/product_catalog.json")
+            ),
+            "batch_proofread_concurrency": _env_int(
+                "BATCH_PROOFREAD_CONCURRENCY", 3
             ),
             "proofreading_api_url": _optional(
                 os.getenv("PROOFREADING_API_URL", "http://10.199.194.160:22235/api")

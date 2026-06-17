@@ -81,6 +81,24 @@ class CliParserTests(unittest.TestCase):
 
         self.assertTrue(args.proofread)
 
+    def test_cli_batch_proofread_options(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "crawl",
+                "--batch-proofread",
+                "--refresh-catalog",
+                "--batch-concurrency",
+                "2",
+                "--batch-limit",
+                "3",
+            ]
+        )
+
+        self.assertTrue(args.batch_proofread)
+        self.assertTrue(args.refresh_catalog)
+        self.assertEqual(args.batch_concurrency, 2)
+        self.assertEqual(args.batch_limit, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

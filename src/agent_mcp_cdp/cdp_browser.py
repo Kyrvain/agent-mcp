@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from .crawlers.browser_session import (
 )
 from .models import CrawlResult, NetworkSnippet
 from .product_search import (
+    ProductListEntry,
     ProductSearchResult,
     build_detail_url,
     match_product,
@@ -36,39 +38,58 @@ class CDPCrawler:
             page = None
             try:
                 page = await session.new_page()
-
-                responses: list[NetworkSnippet] = []
-                page.on("response", lambda response: asyncio.create_task(
-                    self._capture_response(response, responses)
-                ))
-
-                await page.goto(
+                return await self._crawl_with_page(
+                    page,
                     url,
-                    wait_until="domcontentloaded",
-                    timeout=self.settings.navigation_timeout_ms,
-                )
-                await self._settle_page(page)
-                await self._auto_scroll(page)
-
-                title = await page.title()
-                text = await self._body_text(page)
-                links = await self._links(page)
-                screenshot_path = output_dir / "page.png"
-                await page.screenshot(path=str(screenshot_path), full_page=True)
-
-                return CrawlResult(
-                    requested_url=url,
-                    final_url=page.url,
-                    title=title,
-                    text=clean_text(text),
-                    links=links,
-                    responses=responses[: self.settings.max_responses],
-                    screenshot_path=screenshot_path,
-                    browser_mode=session.browser_mode,
+                    output_dir,
+                    session.browser_mode,
                 )
             finally:
                 if page is not None:
                     await page.close()
+
+    async def crawl_many(
+        self,
+        targets: Sequence[tuple[str, Path | None]],
+        *,
+        concurrency: int,
+    ) -> list[CrawlResult | BaseException]:
+        if not targets:
+            return []
+
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+
+        async with BrowserSession(self.settings) as session:
+
+            async def worker(
+                index: int,
+                url: str,
+                output_dir: Path | None,
+            ) -> CrawlResult:
+                async with semaphore:
+                    run_dir = (
+                        output_dir
+                        or self.settings.output_dir / f"batch-{index:03d}"
+                    )
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    page = await session.new_page()
+                    try:
+                        return await self._crawl_with_page(
+                            page,
+                            url,
+                            run_dir,
+                            session.browser_mode,
+                        )
+                    finally:
+                        await page.close()
+
+            return await asyncio.gather(
+                *(
+                    worker(index, url, target_dir)
+                    for index, (url, target_dir) in enumerate(targets, 1)
+                ),
+                return_exceptions=True,
+            )
 
     async def _crawl_catalog_source(
         self,
@@ -132,6 +153,16 @@ class CDPCrawler:
                 self._max_responses_override = None
                 if page is not None:
                     await page.close()
+
+    async def fetch_product_catalog(
+        self,
+        output_dir: Path | None = None,
+    ) -> tuple[CrawlResult, list[ProductListEntry]]:
+        catalog_crawl = await self._crawl_catalog_source(
+            output_dir=output_dir,
+            search_product=None,
+        )
+        return catalog_crawl, parse_product_list(catalog_crawl)
 
     async def search_product(
         self,
@@ -280,6 +311,46 @@ class CDPCrawler:
         )
         if not filled:
             raise RuntimeError("Could not find the listing page name search input.")
+
+    async def _crawl_with_page(
+        self,
+        page: Page,
+        url: str,
+        output_dir: Path,
+        browser_mode: str,
+    ) -> CrawlResult:
+        responses: list[NetworkSnippet] = []
+        page.on(
+            "response",
+            lambda response: asyncio.create_task(
+                self._capture_response(response, responses)
+            ),
+        )
+
+        await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=self.settings.navigation_timeout_ms,
+        )
+        await self._settle_page(page)
+        await self._auto_scroll(page)
+
+        title = await page.title()
+        text = await self._body_text(page)
+        links = await self._links(page)
+        screenshot_path = output_dir / "page.png"
+        await page.screenshot(path=str(screenshot_path), full_page=True)
+
+        return CrawlResult(
+            requested_url=url,
+            final_url=page.url,
+            title=title,
+            text=clean_text(text),
+            links=links,
+            responses=responses[: self.settings.max_responses],
+            screenshot_path=screenshot_path,
+            browser_mode=browser_mode,
+        )
 
     async def _settle_page(self, page: Page) -> None:
         try:

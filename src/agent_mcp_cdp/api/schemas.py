@@ -15,6 +15,10 @@ class CrawlJobRequest(BaseModel):
     search: bool | None = None
     list_only: bool = False
     proofread: bool = False
+    batch_proofread: bool = False
+    refresh_catalog: bool = False
+    batch_limit: int | None = Field(default=None, ge=0)
+    batch_concurrency: int | None = Field(default=None, ge=1)
     cdp_url: str | None = None
     browser_executable: str | None = None
     headed: bool | None = None

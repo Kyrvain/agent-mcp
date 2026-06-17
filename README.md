@@ -16,6 +16,9 @@
 
 # 只列出所有可用产品，不爬取详情
 .venv\Scripts\python.exe -m agent_mcp_cdp crawl --search --headed --list-only
+
+# 批量校对：首次会初始化全量产品目录缓存，后续默认复用缓存
+.venv\Scripts\python.exe -m agent_mcp_cdp crawl --batch-proofread --headed --batch-concurrency 3
 ```
 
 ### 直连模式
@@ -34,6 +37,7 @@
 | 浏览器会话 | `crawlers/browser_session.py` | 统一管理 Chrome/Edge 启动、CDP 连接和浏览器进程关闭 |
 | 产品搜索 | `product_search.py` | 从列表页 API 响应中提取产品目录，并用关键词规则匹配 |
 | 业务流程 | `services/crawl_workflow.py` | 统一串联爬取、功能提取、校对和 payload 生成 |
+| 产品目录缓存 | `services/product_catalog.py` | 保存全量产品与详情链接，批量校对时避免重复初始化目录 |
 | 功能提取 | `extractors/product_features.py` | 用规则从页面材料整理产品功能 |
 | Proofreading | `services/proofreading.py` | 将 `product_features.features` 拼接后发送到校对服务 |
 | 响应结构 | `schemas/payloads.py` | 统一生成 `result.json` 和 `agent_response.json` 的 JSON 结构 |
@@ -51,6 +55,7 @@ CLI / MCP / HTTP API
   -> BrowserSession
   -> ProductFeatureExtractor
   -> ProofreadingClient（启用时）
+  -> ProductCatalogService（批量校对时）
   -> schemas/payloads.py
   -> services/output_writer.py
 ```
@@ -90,6 +95,16 @@ CLI 和 MCP 不直接拼装业务结果，统一由 `CrawlWorkflow` 调度；`re
 }
 ```
 
+批量校对任务示例：
+
+```json
+{
+  "batch_proofread": true,
+  "refresh_catalog": false,
+  "batch_concurrency": 3
+}
+```
+
 API 任务会在后台执行，并串行化爬取流程，避免多个浏览器任务同时争用同一个 CDP 端口或浏览器 profile。进程重启后，任务内存状态会丢失，但 `data/runs` 下的历史结果仍可通过 `/api/runs` 查询。
 
 ## Web 操作台
@@ -112,9 +127,11 @@ npm run dev
 
 前端开发服务器会把 `/api` 代理到 `http://127.0.0.1:8000`。当前 Web 操作台包含：
 
-- 爬取任务表单：产品名搜索 / 直连 URL、校对开关、headed 开关、等待时间、匹配阈值
+- 爬取任务表单：产品名搜索 / 直连 URL / 批量爬取、校对开关、headed 开关、等待时间、匹配阈值
+- 批量爬取参数：刷新目录缓存、并发数、处理上限
 - 任务状态轮询：排队中、运行中、已完成、失败
-- 结果查看：`agent_response`、`result`、提取出的产品功能
+- 结果查看：`agent_response`、`result`、提取出的产品功能、批量结果汇总、产品明细和行内校对对比
+- 状态恢复：产品名搜索、直连 URL、批量爬取各自从 `data/runs` 恢复上一条历史结果，刷新或重新打开页面后自动恢复；浏览器本地只记录当前模式和运行中任务 ID
 - 历史结果：读取 `data/runs` 下的 JSON、Markdown 和截图
 
 其中“显示浏览器”是显式运行模式开关：勾选时强制有界面运行；不勾选时强制 headless 运行。站点有脚本挑战时，headless 模式可能返回空白页。
@@ -128,6 +145,14 @@ npm run dev
 5. 用户输入的产品名与候选目录做关键词打分匹配
 6. 匹配成功后导航到对应产品详情页，爬取并提取功能
 7. 如果启用校对，将提取后的 `product_features.features` 去除换行后拼接，发送到校对服务
+
+批量校对流程：
+
+1. 先读取 `PRODUCT_CATALOG_CACHE_PATH` 指向的目录缓存
+2. 缓存不存在或传 `--refresh-catalog` / `refresh_catalog=true` 时，翻页获取全量产品目录
+3. 缓存内容包含产品 ID、名称、厂商、简介、详情页链接，并写入本地 JSON
+4. 按 `BATCH_PROOFREAD_CONCURRENCY` / `--batch-concurrency` 并发打开详情页、提取功能、调用校对服务
+5. 汇总结果写入批次输出目录，同时每个产品也会写入独立子目录
 
 > `--list-only` / `list_only=true` 是全量目录场景，会保留翻页遍历；普通产品搜索不再逐页翻找。
 
@@ -177,6 +202,10 @@ CLI 和 MCP 是两种调用方式，参数不同，功能一一对应。
 | `--headed` | 显示浏览器窗口 |
 | `--wait-ms MS` | 页面加载后额外等待时间 |
 | `--proofread` | 启用校对服务 |
+| `--batch-proofread` | 批量校对全量目录产品；首次自动初始化并缓存产品与详情链接 |
+| `--refresh-catalog` | 批量校对前强制刷新产品目录缓存 |
+| `--batch-concurrency N` | 批量校对并发数（默认 3，可用 `BATCH_PROOFREAD_CONCURRENCY` 配置） |
+| `--batch-limit N` | 仅处理目录前 N 个产品，便于试跑 |
 | `--cdp-url URL` | 连接已有 CDP 端点 |
 | `--browser-executable PATH` | 指定浏览器路径 |
 | `--output-dir DIR` | 输出目录 |
@@ -193,6 +222,10 @@ crawl_product_features(product_name="飞象智能作业")
 | `url` | str | — | 直连模式：指定详情页 URL；不传时按 `product_name` 搜索 |
 | `list_only` | bool | false | 仅返回产品目录，不爬详情 |
 | `proofread` | bool | false | 是否把提取后的产品功能发送到校对服务 |
+| `batch_proofread` | bool | false | 是否批量校对目录中的产品 |
+| `refresh_catalog` | bool | false | 批量校对前是否强制刷新产品目录缓存 |
+| `batch_limit` | int | — | 批量校对时仅处理前 N 个产品 |
+| `batch_concurrency` | int | — | 批量校对并发数 |
 | `wait_ms` | int | — | 页面加载后额外等待时间 |
 
 > MCP 没有 `--headed` 等 CLI 参数，这些由 `.env` 中的 `BROWSER_HEADLESS` 等配置控制。
@@ -205,6 +238,8 @@ crawl_product_features(product_name="飞象智能作业")
 | 直连 URL | `--url "https://..."` | `url="https://..."` |
 | 仅列出产品 | `--search --list-only` | `list_only=true` |
 | 启用校对 | `--proofread` | `proofread=true` |
+| 批量校对 | `--batch-proofread` | `batch_proofread=true` |
+| 刷新目录缓存 | `--batch-proofread --refresh-catalog` | `batch_proofread=true, refresh_catalog=true` |
 | 跳过校对 | 默认跳过 | 默认跳过 |
 
 ## 配置校对服务
@@ -215,6 +250,8 @@ CLI 默认不调用校对服务；如需把本次提取出的 `product_features.
 PROOFREADING_API_URL=http://10.199.194.160:22235/api
 PROOFREADING_TIMEOUT_S=30
 PROOFREADING_MAX_CHARS=20000
+PRODUCT_CATALOG_CACHE_PATH=data/product_catalog.json
+BATCH_PROOFREAD_CONCURRENCY=3
 ```
 
 发送内容只包含提取后的功能列表，不包含原始页面正文、接口响应、summary 或 evidence。拼接前会移除换行符，避免校对服务把换行误判为“多字”。
@@ -263,3 +300,5 @@ MCP 工具签名定义在 [mcp_server.py](src/agent_mcp_cdp/mcp_server.py)，当
 - `agent_response.json` — 返回给智能体的精简 JSON（产品功能 + 校对结果，启用时）
 - `features.md` — Markdown 格式的产品功能和校对报告（启用时）
 - `page.png` — 页面截图（辅助参考）
+
+批量校对运行会在同一目录下生成汇总版 `result.json`、`agent_response.json`、`features.md`，并在 `products/<序号>-<产品名>/` 下保存每个产品的单独输出。

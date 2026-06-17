@@ -17,6 +17,10 @@ class ProductListEntry:
     introduction: str = ""
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
+    @property
+    def detail_url(self) -> str:
+        return build_detail_url(self)
+
 
 @dataclass(slots=True)
 class ProductSearchResult:
@@ -149,4 +153,26 @@ def build_detail_url(entry: ProductListEntry) -> str:
     return (
         f"https://bjedures.bjedu.cn/ggzypt/#/ai/mark/detail"
         f"?id={entry._id}&name={encoded_name}"
+    )
+
+
+def product_entry_to_dict(entry: ProductListEntry) -> dict[str, Any]:
+    return {
+        "id": entry._id,
+        "name": entry.name,
+        "client_name": entry.client_name,
+        "introduction": entry.introduction,
+        "detail_url": entry.detail_url,
+        "raw": dict(entry.raw),
+    }
+
+
+def product_entry_from_dict(payload: dict[str, Any]) -> ProductListEntry:
+    raw = payload.get("raw")
+    return ProductListEntry(
+        _id=str(payload.get("id") or payload.get("_id") or ""),
+        name=str(payload.get("name") or ""),
+        client_name=str(payload.get("client_name") or ""),
+        introduction=str(payload.get("introduction") or ""),
+        raw=raw if isinstance(raw, dict) else {},
     )

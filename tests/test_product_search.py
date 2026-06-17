@@ -13,6 +13,8 @@ from agent_mcp_cdp.product_search import (
     build_detail_url,
     match_product,
     parse_product_list,
+    product_entry_from_dict,
+    product_entry_to_dict,
 )
 
 
@@ -100,6 +102,16 @@ class ProductSearchParseTests(unittest.TestCase):
 
         self.assertIn("id=abc", url)
         self.assertIn("name=%E4%B9%9D%E7%AB%A0%E7%88%B1%E5%AD%A6", url)
+
+    def test_product_entry_dict_includes_detail_url(self) -> None:
+        entry = ProductListEntry(_id="abc", name="九章爱学")
+
+        payload = product_entry_to_dict(entry)
+        restored = product_entry_from_dict(payload)
+
+        self.assertEqual(restored._id, "abc")
+        self.assertEqual(restored.name, "九章爱学")
+        self.assertEqual(payload["detail_url"], entry.detail_url)
 
 
 class ProductMatchTests(unittest.IsolatedAsyncioTestCase):

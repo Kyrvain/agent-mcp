@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..models import CrawlResult, ProductFeatures, ProofreadingResult
-from ..product_search import ProductSearchResult
+from ..product_search import ProductSearchResult, product_entry_to_dict
 
 
 def product_features_payload(features: ProductFeatures) -> dict[str, Any]:
@@ -72,12 +72,7 @@ def build_search_response(
             "confidence": search_result.confidence,
             "warnings": list(search_result.warnings),
             "candidates": [
-                {
-                    "id": entry._id,
-                    "name": entry.name,
-                    "client_name": entry.client_name,
-                    "introduction": entry.introduction,
-                }
+                product_entry_to_dict(entry)
                 for entry in search_result.candidates[:limit]
             ],
         }

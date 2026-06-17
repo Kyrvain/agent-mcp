@@ -1,4 +1,4 @@
-import type { CrawlJobRequest, CrawlJobResponse, RunSummary } from './types'
+import type { CrawlJobRequest, CrawlJobResponse, CrawlMode, RunSummary } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -44,6 +44,24 @@ export function getRunResult(id: string) {
 
 export function getRunAgentResponse(id: string) {
   return request<Record<string, unknown>>(`/api/runs/${id}/agent-response`)
+}
+
+export async function getLatestRunForMode(mode: CrawlMode) {
+  const response = await fetch(`/api/runs/latest/${mode}`)
+  if (response.status === 404) {
+    return null
+  }
+  if (!response.ok) {
+    let detail = response.statusText
+    try {
+      const body = await response.json()
+      detail = body.detail ?? detail
+    } catch {
+      detail = await response.text()
+    }
+    throw new Error(detail || `Request failed: ${response.status}`)
+  }
+  return response.json() as Promise<CrawlJobResponse>
 }
 
 export async function getRunFeatures(id: string) {

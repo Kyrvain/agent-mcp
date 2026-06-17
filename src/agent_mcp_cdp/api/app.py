@@ -51,6 +51,15 @@ def create_app(
     async def list_runs() -> list[RunSummary]:
         return app.state.run_store.list_runs()
 
+    @app.get("/api/runs/latest/{mode}", response_model=CrawlJobResponse)
+    async def get_latest_run_for_mode(mode: str) -> CrawlJobResponse:
+        if mode not in {"search", "direct", "batch"}:
+            raise HTTPException(status_code=400, detail="Invalid run mode.")
+        job = app.state.run_store.latest_job_response(mode)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Run result not found.")
+        return job
+
     @app.get("/api/runs/{run_id}/result")
     async def get_run_result(run_id: str) -> dict:
         return _read_json_or_404(run_id, "result.json")

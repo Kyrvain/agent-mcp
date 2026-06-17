@@ -2,6 +2,7 @@
 .tmp/
 .browser-profile/
 data/runs/
+data/product_catalog.json
 __pycache__/
 *.egg-info/
 *.pyc

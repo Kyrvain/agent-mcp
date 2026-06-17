@@ -70,7 +70,9 @@ class CrawlJobManager:
         job = CrawlJob(
             id=uuid4().hex,
             request=request,
-            output_dir=self.run_dir_factory() if not request.list_only else None,
+            output_dir=self.run_dir_factory()
+            if request.batch_proofread or not request.list_only
+            else None,
         )
         self._jobs[job.id] = job
         job.task = asyncio.create_task(self._run_job(job))
@@ -93,6 +95,18 @@ class CrawlJobManager:
             try:
                 settings = self._settings_from_request(job.request, job.output_dir)
                 workflow = self.workflow_factory(settings)
+                if job.request.batch_proofread:
+                    batch_result = await workflow.run_batch_proofread(
+                        force_refresh_catalog=job.request.refresh_catalog,
+                        limit=job.request.batch_limit,
+                        concurrency=job.request.batch_concurrency,
+                        output_dir=job.output_dir,
+                    )
+                    job.result = batch_result.result_payload
+                    job.agent_response = batch_result.agent_response
+                    job.status = "succeeded"
+                    return
+
                 use_search = (
                     job.request.search
                     if job.request.search is not None
@@ -132,6 +146,7 @@ class CrawlJobManager:
             browser_headless=None if request.headed is None else not request.headed,
             wait_after_load_ms=request.wait_ms,
             output_dir=output_dir,
+            batch_proofread_concurrency=request.batch_concurrency,
         )
         if request.confidence is not None:
             settings.search_confidence_threshold = request.confidence

@@ -18,6 +18,7 @@ class SettingsFromEnvTests(unittest.TestCase):
             "BROWSER_HEADLESS": "false",
             "WAIT_AFTER_LOAD_MS": "1234",
             "SEARCH_CONFIDENCE_THRESHOLD": "0.75",
+            "BATCH_PROOFREAD_CONCURRENCY": "5",
             "PROOFREADING_TIMEOUT_S": "2.5",
         }
 
@@ -28,6 +29,7 @@ class SettingsFromEnvTests(unittest.TestCase):
         self.assertFalse(settings.browser_headless)
         self.assertEqual(settings.wait_after_load_ms, 1234)
         self.assertEqual(settings.search_confidence_threshold, 0.75)
+        self.assertEqual(settings.batch_proofread_concurrency, 5)
         self.assertEqual(settings.proofreading_timeout_s, 2.5)
 
     def test_invalid_integer_env_has_clear_error(self) -> None:

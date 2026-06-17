@@ -28,6 +28,10 @@ if mcp is not None:
         wait_ms: int | None = None,
         list_only: bool = False,
         proofread: bool = False,
+        batch_proofread: bool = False,
+        refresh_catalog: bool = False,
+        batch_limit: int | None = None,
+        batch_concurrency: int | None = None,
     ) -> dict:
         """Crawl a dynamic web page through CDP and extract product features.
 
@@ -35,14 +39,26 @@ if mcp is not None:
         crawls the matched detail page. If url is provided, crawls that detail URL
         directly. Set list_only=True to return the product catalog without crawling
         a detail page. Set proofread=True to send extracted product features to
-        the proofreading service.
+        the proofreading service. Set batch_proofread=True to initialize or reuse
+        the full product catalog cache, then proofread products in parallel.
         """
         settings = Settings.from_env(
             target_url=url or DEFAULT_TARGET_URL,
             product_name=product_name,
             wait_after_load_ms=wait_ms,
+            batch_proofread_concurrency=batch_concurrency,
         )
         workflow = CrawlWorkflow(settings)
+        if batch_proofread:
+            run_dir = default_run_dir(_runs_dir(), prefix="mcp-batch-")
+            workflow_result = await workflow.run_batch_proofread(
+                force_refresh_catalog=refresh_catalog,
+                limit=batch_limit,
+                concurrency=batch_concurrency,
+                output_dir=run_dir,
+            )
+            return workflow_result.agent_response
+
         workflow_result = await workflow.run(
             use_search=url is None or list_only,
             list_only=list_only,
